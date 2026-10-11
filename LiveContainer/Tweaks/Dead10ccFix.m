@@ -67,20 +67,26 @@ void initDead10ccFix(void) {
     }
 
     void *pidinfo = malloc(pidinfo_size);
-    pidinfo_size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, pidinfo, pidinfo_size);
+    if (pidinfo == NULL) {
+        return nil;
+    }
+    int pidinfo_capacity = pidinfo_size;
+    pidinfo_size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, pidinfo, pidinfo_capacity);
+    if (pidinfo_size <= 0 || pidinfo_size > pidinfo_capacity) {
+        free(pidinfo);
+        return nil;
+    }
 
     NSMutableSet *openFilePaths = [NSMutableSet set];
 
-    if (pidinfo_size >= 8) {
+    if (pidinfo_size >= sizeof(struct proc_fdinfo)) {
         uint64_t count = pidinfo_size / sizeof(struct proc_fdinfo);
-        struct proc_fdinfo *fdinfo = (struct proc_fdinfo *)pidinfo;
-        
-        while (count--) {
+        for (uint64_t index = 0; index < count; ++index) {
+            struct proc_fdinfo *fdinfo = (struct proc_fdinfo *)pidinfo + index;
             if (fdinfo->proc_fdtype == PROX_FDTYPE_VNODE) {
-                struct vnode_fdinfowithpath vnodeinfo;
-                //memset(&vnodeinfo, 0, 0x200); // TODO: Why not sizeof(vnodeinfo)?
+                struct vnode_fdinfowithpath vnodeinfo = {0};
                 int vnodeinfo_size = proc_pidfdinfo(pid, fdinfo->proc_fd, PROC_PIDFDVNODEPATHINFO, &vnodeinfo, sizeof(vnodeinfo));
-                if (vnodeinfo_size == 0) {
+                if (vnodeinfo_size <= 0) {
                     // _rbs_process_log with %{public}@ proc_pidfdinfo failed for fd %d with errno %d
                     continue;
                 } else if (vnodeinfo_size < sizeof(vnodeinfo)) {
@@ -88,8 +94,8 @@ void initDead10ccFix(void) {
                     continue;
                 }
 
-                int64_t pathlen = strlen(vnodeinfo.pvip.vip_path);
-                if (pathlen == 0) {
+                size_t pathlen = strnlen(vnodeinfo.pvip.vip_path, sizeof(vnodeinfo.pvip.vip_path));
+                if (pathlen == 0 || pathlen == sizeof(vnodeinfo.pvip.vip_path)) {
                     // _rbs_process_log with%{public}@ nodeFDInfo.pvip.vip_path is empty for one fd
                     continue;
                 }
@@ -102,11 +108,13 @@ void initDead10ccFix(void) {
                 path = [path stringByStandardizingPath];
                 [openFilePaths addObject:path];
             }
-            fdinfo++;
         }
     }
 
+    // Paths have been copied into NSStrings; the descriptor list is no longer needed.
+    free(pidinfo);
     NSMutableSet *lockedFilePaths = [NSMutableSet set];
+    int (*sqliteLockState)(char*, int) = dlsym(RTLD_DEFAULT, "_sqlite3_lockstate");
 
     for (NSString *path in openFilePaths) {
         char *path_c = (char *)[path UTF8String];
@@ -123,12 +131,17 @@ void initDead10ccFix(void) {
             continue;
         }
 
+        BOOL shouldIgnore = NO;
         for (NSString *ignoringPath in ignoring) {
             if ([path hasPrefix:ignoringPath]) {
                 // _rbs_process_log with %{public}@: Ignoring file %{public}@ because it is in an allowed path:  %{public}@
 //                NSLog(@"Ignoring file %@ because it is in an allowed path: %@", path, ignoringPath);
-                continue;
+                shouldIgnore = YES;
+                break;
             }
+        }
+        if (shouldIgnore) {
+            continue;
         }
 
         if ([path hasSuffix:@"-shm"] || [path hasSuffix:@"-wal"] || [path hasSuffix:@"-journal"]) {
@@ -138,16 +151,16 @@ void initDead10ccFix(void) {
         }
 
         if (getxattr(path_c, "com.apple.runningboard.can-suspend-locked", NULL, 0, 0, 0) == 1) {
-            char value;
-            getxattr(path_c, "com.apple.runningboard.can-suspend-locked", &value, sizeof(value), 0, 0);
-            if (value != 0) {
+            char value = 0;
+            ssize_t valueSize = getxattr(path_c, "com.apple.runningboard.can-suspend-locked", &value, sizeof(value), 0, 0);
+            if (valueSize == sizeof(value) && value != 0) {
                 // _rbs_process_log with %{public}@ Ignoring file with can-suspend-locked: %{public}@
 //                NSLog(@"Ignoring file with can-suspend-locked: %@", path);
                 continue;
             }
         }
-        int (*_sqlite3_lockstate)(char*, int) = dlsym(RTLD_DEFAULT, "_sqlite3_lockstate");
-        int sqlite_lock = _sqlite3_lockstate(path_c, pid);
+        // The private SQLite symbol is not available on every OS version.
+        int sqlite_lock = sqliteLockState ? sqliteLockState(path_c, pid) : -1;
         if (sqlite_lock == 0) {
             // _rbs_process_log with %{public}@ Ignoring unlocked SQLite database: %{public}@
 //            NSLog(@"Ignoring unlocked SQLite database: %@", path);
@@ -161,7 +174,7 @@ void initDead10ccFix(void) {
             
         } else {
             int fd = open(path_c, O_RDONLY | O_NOCTTY);
-            if (fd <= 1) {
+            if (fd < 0) {
                 continue;
             }
 
@@ -171,6 +184,8 @@ void initDead10ccFix(void) {
             fl.l_pid = pid;
 
             int lock = fcntl(fd, F_GETLKPID, &fl);
+            // This descriptor belongs to the probe, including when fcntl fails.
+            close(fd);
             if (lock == -1) {
                 continue;
             }

@@ -53,16 +53,16 @@ void ZMachO::FreeArchOes()
 		ZArchO* archo = m_arrArchOes[i];
 		delete archo;
 	}
-	m_pBase = NULL;
-	m_sSize = 0;
+	// The mapping belongs to CloseFile, not to the slice objects.
 	m_arrArchOes.clear();
 }
 
 bool ZMachO::OpenFile(const char* szPath)
 {
-	FreeArchOes();
+	if (!Free()) {
+		return false;
+	}
 
-	m_sSize = 0;
 	m_pBase = (uint8_t*)ZFile::MapFile(szPath, 0, 0, &m_sSize, false);
 	if (NULL != m_pBase) {
 		uint32_t magic = *((uint32_t*)m_pBase);
@@ -75,16 +75,19 @@ bool ZMachO::OpenFile(const char* szPath)
 				uint32_t uArchLength = (FAT_MAGIC == magic) ? pFatArch->size : LE(pFatArch->size);
 				if (!NewArchO(pArchBase, uArchLength)) {
 					ZLog::ErrorV(">>> Invalid arch file in fat mach-o file!\n");
+					Free();
 					return false;
 				}
 			}
 		} else if (MH_MAGIC == magic || MH_CIGAM == magic || MH_MAGIC_64 == magic || MH_CIGAM_64 == magic) {
 			if (!NewArchO(m_pBase, (uint32_t)m_sSize)) {
 				ZLog::ErrorV(">>> Invalid mach-o file!\n");
+				Free();
 				return false;
 			}
 		} else {
 			ZLog::ErrorV(">>> Invalid mach-o file (2)!\n");
+			Free();
 			return false;
 		}
 	}
@@ -94,7 +97,10 @@ bool ZMachO::OpenFile(const char* szPath)
 
 bool ZMachO::CloseFile()
 {
-	if (NULL == m_pBase || m_sSize <= 0) {
+	if (NULL == m_pBase) {
+		return true; // Already closed, including after a successful Sign.
+	}
+	if (m_sSize <= 0) {
 		return false;
 	}
 
@@ -103,6 +109,8 @@ bool ZMachO::CloseFile()
 		return false;
 	}
 
+	m_pBase = NULL;
+	m_sSize = 0;
 	return true;
 }
 

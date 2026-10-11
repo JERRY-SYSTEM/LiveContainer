@@ -290,8 +290,9 @@ int checkCert(NSData *key,
     ZSignAsset zSignAsset;
     zSignAsset.InitAdhoc([entitlementData bytes], (int)[entitlementData length]);
     
-    ZMachO* macho = new ZMachO();
-    if (!macho->Init(path.UTF8String)) {
+    // Stack ownership releases the mapping on both success and early failure.
+    ZMachO macho;
+    if (!macho.Init(path.UTF8String)) {
         ZLog::ErrorV(">>> Invalid mach-o file! %s\n", path.UTF8String);
         return false;
     }
@@ -300,7 +301,7 @@ int checkCert(NSData *key,
     string strInfoSHA256;
     string strCodeResourcesData;
     string strBundleId(bundleId.UTF8String);
-    bool bRet = macho->Sign(&zSignAsset, true, strBundleId, strInfoSHA1, strInfoSHA256, strCodeResourcesData);
+    bool bRet = macho.Sign(&zSignAsset, true, strBundleId, strInfoSHA1, strInfoSHA256, strCodeResourcesData);
     return bRet;
 }
 

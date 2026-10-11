@@ -61,7 +61,7 @@ void NUDGuestHooksInit(void) {
         uint64_t offset = (uint64_t)((void*)_CFPrefsCurrentAppIdentifierCache - (void*)coreFoundationHeader);
         saveCachedSymbol(@"__CFPrefsCurrentAppIdentifierCache", coreFoundationHeader, offset);
     }
-    [NSUserDefaults.lcUserDefaults _setIdentifier:(__bridge NSString*)CFStringCreateCopy(nil, *_CFPrefsCurrentAppIdentifierCache)];
+    [NSUserDefaults.lcUserDefaults _setIdentifier:CFBridgingRelease(CFStringCreateCopy(nil, *_CFPrefsCurrentAppIdentifierCache))];
     *_CFPrefsCurrentAppIdentifierCache = (__bridge CFStringRef)NSUserDefaults.lcGuestAppId;
 #else
     // FIXME: for now we skip overwriting _CFPrefsCurrentAppIdentifierCache on simulator, since there is no way to find private symbol

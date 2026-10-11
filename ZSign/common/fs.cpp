@@ -43,23 +43,26 @@ void* ZFile::MapFile(const char* path, size_t offset, size_t size, size_t* psize
 
 #else
     int fd = open(path, ro ? O_RDONLY : O_RDWR);
-    if (fd <= 0)
+    if (fd < 0)
     {
         // fix some weird permission issues, change the file's permission to 0755
         if(chmod(path, 0755) == 0) {
             fd = open(path, ro ? O_RDONLY : O_RDWR);
         }
         
-        if (fd <= 0)
+        if (fd < 0)
         {
             return NULL;
         }
     }
     
-	if (fd > 0) {
+	if (fd >= 0) {
 		if (size <= 0) {
 			struct stat st = { 0 };
-			fstat(fd, &st);
+			if (fstat(fd, &st) != 0) {
+				close(fd);
+				return NULL;
+			}
 			size = st.st_size;
 		}
 

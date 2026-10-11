@@ -2542,6 +2542,7 @@ bool jpreader::_read_unicode(const char* pcursor, size_t size, jvalue& pv)
 
 	char* outbuf = (char*)::malloc(3 * (size + 1));
 	if (NULL == outbuf) {
+		::free(unistr);
 		return false;
 	}
 
